@@ -1,0 +1,13 @@
+/ {
+	chosen {
+		zephyr,bt-hci = &bt_hci_bsim;
+	};
+};
+
+&bt_hci_uc {
+	status = "disabled";
+};
+
+&bt_hci_bsim {
+	status = "okay";
+};
