@@ -6,7 +6,7 @@
 [![BLE](https://img.shields.io/badge/Wireless-BLE-0082FC.svg)](https://www.bluetooth.com/learn-about-bluetooth/tech-overview/)
 
 BLE peripheral firmware for `nrf52840dk/nrf52840` built with Zephyr RTOS.  
-Implements a custom 128-bit GATT service for sensor telemetry and runtime configuration, including flash-backed settings persistence.
+Implements a custom 128-bit GATT service for sensor telemetry and runtime configuration, with flash-backed settings persistence, encrypted access control, and Eddystone-URL broadcast support.
 
 ## Features
 
@@ -19,6 +19,9 @@ Implements a custom 128-bit GATT service for sensor telemetry and runtime config
 - Per-characteristic CCC notification control
 - Persistent sample rate using Zephyr Settings + NVS (`sensor/rate`)
 - Startup-time error checks for BLE and settings initialization
+- LE Secure Connections flow with pairing/bonding callbacks and security level upgrade to L3
+- Encrypted GATT permissions for characteristic reads/writes and CCC operations
+- Eddystone-URL frame in advertising payload for app-less URL discovery
 
 ## Hardware / Software
 
@@ -75,6 +78,17 @@ UART runtime logs in Tera Term:
 
 ![Runtime Logs](screenshot/log_screenshot.png)
 
+## Security (LE Secure Connections)
+
+- `CONFIG_BT_SMP=y`, `CONFIG_BT_BONDABLE=y`, and `CONFIG_BT_SETTINGS=y` enabled in `prj.conf`
+- Pairing callbacks implemented for passkey display, pairing completion, and failure diagnostics
+- Connection security upgraded at runtime with `bt_conn_set_security(conn, BT_SECURITY_L3)`
+- Custom characteristics require encrypted access (`BT_GATT_PERM_READ_ENCRYPT`, `BT_GATT_PERM_WRITE_ENCRYPT`)
+
+## Eddystone-URL Broadcast
+
+Advertising payload includes Eddystone service data (`0xFEAA`) with URL frame type (`0x10`), broadcasting a GitHub URL so nearby scanners can discover a link without opening the custom GATT service.
+
 ## Validate Persistence
 
 1. Connect from a BLE client (e.g. nRF Connect mobile).
@@ -85,6 +99,12 @@ UART runtime logs in Tera Term:
 ```text
 Loaded sample rate: 500 ms
 ```
+
+## Validate Secure Access + Beacon
+
+1. Connect from nRF Connect mobile and complete pairing when passkey is shown.
+2. Confirm encrypted read/write works only after security is established.
+3. In scanner view, verify Eddystone service data (`0xFEAA`) is present in advertising.
 
 ## UART Logs (Tera Term)
 

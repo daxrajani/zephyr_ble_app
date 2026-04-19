@@ -4,6 +4,7 @@
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/gatt.h>
+#include <zephyr/bluetooth/hci.h>
 #include <zephyr/settings/settings.h>
 #include <inttypes.h>
 #include <string.h>
@@ -84,6 +85,43 @@ static void humidity_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t v
     LOG_INF("Humidity Notifications %s", notify_humidity_enabled ? "enabled" : "disabled");
 }
 
+static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey)
+{
+    char addr[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+    LOG_INF("Passkey for %s: %06u", addr, passkey);
+}
+
+static void auth_cancel(struct bt_conn *conn)
+{
+    ARG_UNUSED(conn);
+    LOG_INF("Pairing cancelled");
+}
+
+static void pairing_complete(struct bt_conn *conn, bool bonded)
+{
+    char addr[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+    LOG_INF("Pairing completed with %s, bonded: %s", addr, bonded ? "yes" : "no");
+}
+
+static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
+{
+    char addr[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+    LOG_ERR("Pairing failed with %s, reason %d", addr, reason);
+}
+
+static struct bt_conn_auth_cb auth_cb_display = {
+    .passkey_display = auth_passkey_display,
+    .cancel = auth_cancel,
+};
+
+static struct bt_conn_auth_info_cb auth_info_cb = {
+    .pairing_complete = pairing_complete,
+    .pairing_failed = pairing_failed,
+};
+
 /* ------------------------------------------------------------------------- */
 /* THE GATT SERVICE TABLE                                                    */
 /* ------------------------------------------------------------------------- */
@@ -92,19 +130,19 @@ BT_GATT_SERVICE_DEFINE(my_sensor_svc,
     
     BT_GATT_CHARACTERISTIC(UUID_CUSTOM_TEMP,
                            BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
-                           BT_GATT_PERM_READ, 
+                           BT_GATT_PERM_READ_ENCRYPT,
                            read_sensor_data, NULL, &temp_value),
-    BT_GATT_CCC(temp_ccc_cfg_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    BT_GATT_CCC(temp_ccc_cfg_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
                            
     BT_GATT_CHARACTERISTIC(UUID_CUSTOM_HUMIDITY,
                            BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
-                           BT_GATT_PERM_READ, 
+                           BT_GATT_PERM_READ_ENCRYPT,
                            read_sensor_data, NULL, &humidity_value),
-    BT_GATT_CCC(humidity_ccc_cfg_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    BT_GATT_CCC(humidity_ccc_cfg_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
                            
     BT_GATT_CHARACTERISTIC(UUID_CUSTOM_SAMPLE_RATE,
                            BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
-                           BT_GATT_PERM_READ | BT_GATT_PERM_WRITE, 
+                           BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                            read_sensor_data, write_sample_rate, &sample_rate_value),
 );
 
@@ -165,12 +203,21 @@ static void adv_work_handler(struct k_work *work)
 
 static void connected(struct bt_conn *conn, uint8_t err)
 {
+    int sec_err;
+
     if (err) {
         LOG_ERR("Connection failed (err 0x%02x)", err);
         return;
     }
     LOG_INF("Phone Connected!");
     current_conn = bt_conn_ref(conn);
+
+    sec_err = bt_conn_set_security(conn, BT_SECURITY_L3);
+    if (sec_err) {
+        LOG_ERR("Failed to set security (err %d)", sec_err);
+    } else {
+        LOG_INF("Security request sent (L3/MITM)");
+    }
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
@@ -188,9 +235,23 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     k_work_submit(&adv_work);
 }
 
+static void security_changed(struct bt_conn *conn, bt_security_t level,
+                             enum bt_security_err err)
+{
+    char addr[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+
+    if (err) {
+        LOG_ERR("Security failed with %s: level %u err %d", addr, level, err);
+    } else {
+        LOG_INF("Security changed with %s: level %u", addr, level);
+    }
+}
+
 BT_CONN_CB_DEFINE(conn_callbacks) = {
     .connected = connected,
     .disconnected = disconnected,
+    .security_changed = security_changed,
 };
 
 /* ------------------------------------------------------------------------- */
@@ -202,6 +263,15 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 static const struct bt_data ad[] = {
     BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
     BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
+    BT_DATA_BYTES(BT_DATA_UUID16_ALL, 0xAA, 0xFE),
+    BT_DATA_BYTES(BT_DATA_SVC_DATA16,
+                  0xAA, 0xFE, /* Eddystone UUID (0xFEAA), little-endian */
+                  0x10,       /* Eddystone-URL frame type */
+                  0xEE,       /* Calibrated TX power at 0m */
+                  0x01,       /* "https://www." */
+                  'g', 'i', 't', 'h', 'u', 'b',
+                  0x00,       /* ".com/" */
+                  'd', 'a', 'x', 'r', 'a', 'j', 'a', 'n', 'i'),
 };
 
 static int settings_set_cb(const char *name, size_t len,
@@ -225,13 +295,25 @@ int main(void)
 {
     int err;
 
-    LOG_INF("Starting Dax_BLE Phase 4 (Settings Persistence) Application...");
+    LOG_INF("Starting Dax_BLE (Secure GATT + Eddystone URL)...");
 
     k_work_init(&adv_work, adv_work_handler);
 
     err = bt_enable(NULL);
     if (err) {
         LOG_ERR("Bluetooth init failed (err %d)", err);
+        return 0;
+    }
+
+    err = bt_conn_auth_cb_register(&auth_cb_display);
+    if (err) {
+        LOG_ERR("Auth callback register failed (err %d)", err);
+        return 0;
+    }
+
+    err = bt_conn_auth_info_cb_register(&auth_info_cb);
+    if (err) {
+        LOG_ERR("Auth info callback register failed (err %d)", err);
         return 0;
     }
 
