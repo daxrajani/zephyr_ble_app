@@ -4,12 +4,14 @@
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/gatt.h>
+#include <zephyr/settings/settings.h>
 #include <inttypes.h>
+#include <string.h>
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
 /* ------------------------------------------------------------------------- */
-/* CUSTOM UUID DEFINITIONS                                                */
+/* CUSTOM UUID DEFINITIONS                                                   */
 /* ------------------------------------------------------------------------- */
 #define UUID_CUSTOM_SERVICE \
     BT_UUID_DECLARE_128(BT_UUID_128_ENCODE(0x773c49e4, 0x6ad5, 0x4035, 0xa3de, 0x495293c372c6))
@@ -24,7 +26,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
     BT_UUID_DECLARE_128(BT_UUID_128_ENCODE(0x773c49e7, 0x6ad5, 0x4035, 0xa3de, 0x495293c372c6))
 
 /* ------------------------------------------------------------------------- */
-/* SENSOR DATA & STATE                                              */
+/* SENSOR DATA & STATE                                                       */
 /* ------------------------------------------------------------------------- */
 static int16_t sensor_temp = 2400;     
 static uint16_t sensor_humidity = 4550; 
@@ -34,7 +36,7 @@ static struct bt_conn *current_conn = NULL;
 static struct bt_le_ext_adv *ext_adv_set; 
 static struct k_work adv_work;
 
-/* THE FIX: Independent notification state flags */
+/* PER-CHARACTERISTIC NOTIFICATION FLAGS */
 static bool notify_temp_enabled = false;
 static bool notify_humidity_enabled = false;
 
@@ -65,10 +67,11 @@ static ssize_t write_sample_rate(struct bt_conn *conn, const struct bt_gatt_attr
     }
     memcpy(&sample_rate_ms, buf, len);
     LOG_INF("Phone updated Sample Rate to: %" PRIu32 " ms", sample_rate_ms);
+    settings_save_one("sensor/rate", &sample_rate_ms, sizeof(sample_rate_ms));
     return len;
 }
 
-/* THE FIX: Dedicated CCCD callbacks for each characteristic */
+/* DEDICATED CCCD CALLBACKS */
 static void temp_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
     notify_temp_enabled = (value == BT_GATT_CCC_NOTIFY);
@@ -82,7 +85,7 @@ static void humidity_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t v
 }
 
 /* ------------------------------------------------------------------------- */
-/* THE GATT SERVICE TABLE                                                 */
+/* THE GATT SERVICE TABLE                                                    */
 /* ------------------------------------------------------------------------- */
 BT_GATT_SERVICE_DEFINE(my_sensor_svc,
     BT_GATT_PRIMARY_SERVICE(UUID_CUSTOM_SERVICE),
@@ -114,21 +117,19 @@ static void sensor_thread_func(void *p1, void *p2, void *p3)
     ARG_UNUSED(p2);
     ARG_UNUSED(p3);
 
-    /* Direction multipliers for our integer bouncing wave */
     int8_t temp_dir = 1;
     int8_t hum_dir = 1;
 
     while (1) {
         k_sleep(K_MSEC(sample_rate_ms));
 
-        /* Organic Integer Data Generation (Bouncing Wave) */
         sensor_temp += (temp_dir * 5);       
         if (sensor_temp >= 3000 || sensor_temp <= 2000) temp_dir *= -1;
 
         sensor_humidity += (hum_dir * 15);  
         if (sensor_humidity >= 7000 || sensor_humidity <= 3000) hum_dir *= -1;
 
-        /* Independent notification checks */
+        /* INDEPENDENT NOTIFICATION CHECKS */
         if (current_conn) {
             if (notify_temp_enabled) {
                 bt_gatt_notify(current_conn, &my_sensor_svc.attrs[2], &sensor_temp, sizeof(sensor_temp));
@@ -180,7 +181,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
         current_conn = NULL;
     }
     
-    /* Safely clear all notification states */
+    /* RESET BOTH FLAGS UPON DISCONNECT */
     notify_temp_enabled = false;
     notify_humidity_enabled = false;
     
@@ -203,17 +204,52 @@ static const struct bt_data ad[] = {
     BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
 };
 
+static int settings_set_cb(const char *name, size_t len,
+                           settings_read_cb read_cb, void *cb_arg)
+{
+    ARG_UNUSED(len);
+
+    if (strcmp(name, "rate") == 0) {
+        read_cb(cb_arg, &sample_rate_ms, sizeof(sample_rate_ms));
+        LOG_INF("Loaded sample rate: %" PRIu32 " ms", sample_rate_ms);
+    }
+    return 0;
+}
+
+static struct settings_handler my_settings = {
+    .name = "sensor",
+    .h_set = settings_set_cb,
+};
+
 int main(void)
 {
     int err;
 
-    LOG_INF("Starting Dax_BLE Phase 3 (Active Sensor) Application...");
+    LOG_INF("Starting Dax_BLE Phase 4 (Settings Persistence) Application...");
 
     k_work_init(&adv_work, adv_work_handler);
 
     err = bt_enable(NULL);
     if (err) {
         LOG_ERR("Bluetooth init failed (err %d)", err);
+        return 0;
+    }
+
+    err = settings_subsys_init();
+    if (err) {
+        LOG_ERR("Settings init failed (err %d)", err);
+        return 0;
+    }
+
+    err = settings_register(&my_settings);
+    if (err) {
+        LOG_ERR("Settings register failed (err %d)", err);
+        return 0;
+    }
+
+    err = settings_load();
+    if (err) {
+        LOG_ERR("Settings load failed (err %d)", err);
         return 0;
     }
 
