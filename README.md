@@ -19,7 +19,7 @@ Implements a custom 128-bit GATT service for sensor telemetry and runtime config
 - Per-characteristic CCC notification control
 - Persistent sample rate using Zephyr Settings + NVS (`sensor/rate`)
 - Startup-time error checks for BLE and settings initialization
-- LE Secure Connections flow with pairing/bonding callbacks and security level upgrade to L3
+- LE security flow with pairing/bonding callbacks and encrypted link upgrade
 - Encrypted GATT permissions for characteristic reads/writes and CCC operations
 - Eddystone-URL frame in advertising payload for app-less URL discovery
 
@@ -65,7 +65,7 @@ west build -b nrf52840dk/nrf52840 -p always
 ### 2) Flash
 
 ```powershell
-west flash -d build -r nrfjprog --snr 1050292656
+west flash -d build -r nrfjprog
 ```
 
 ## Demo
@@ -82,7 +82,7 @@ UART runtime logs in Tera Term:
 
 - `CONFIG_BT_SMP=y`, `CONFIG_BT_BONDABLE=y`, and `CONFIG_BT_SETTINGS=y` enabled in `prj.conf`
 - Pairing callbacks implemented for passkey display, pairing completion, and failure diagnostics
-- Connection security upgraded at runtime with `bt_conn_set_security(conn, BT_SECURITY_L3)`
+- Connection security upgraded at runtime with `bt_conn_set_security(conn, BT_SECURITY_L2)`
 - Custom characteristics require encrypted access (`BT_GATT_PERM_READ_ENCRYPT`, `BT_GATT_PERM_WRITE_ENCRYPT`)
 
 ## Eddystone-URL Broadcast
@@ -121,4 +121,11 @@ Open the DK virtual COM port with:
 - If flashing via `nrfutil` fails, use `-r nrfjprog`.
 - If `nrfjprog` is missing, install nRF Command Line Tools and add its `bin` to `PATH`.
 - If J-Link errors (`JLinkARM.dll -256`) appear, update SEGGER J-Link and reconnect via the DK `DEBUG` USB port.
+
+## What Was Hard
+
+- Intel wireless combo card interference caused intermittent scan/connect behavior during early validation, which looked like firmware instability until host-side radio behavior was isolated.
+- Connection ownership bugs around `bt_conn_ref`/`bt_conn_unref` caused reconnect edge cases until lifecycle handling was tightened in connect/disconnect callbacks.
+- A shared CCC state approach led to incorrect notification behavior across characteristics; splitting to per-characteristic flags fixed cross-talk.
+- Native simulation (`bsim`) was useful for early BLE flow checks, but final debugging still required real hardware due to controller- and probe-specific behavior.
 

@@ -11,6 +11,8 @@
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
+extern const struct bt_gatt_service_static my_sensor_svc;
+
 /* ------------------------------------------------------------------------- */
 /* CUSTOM UUID DEFINITIONS                                                   */
 /* ------------------------------------------------------------------------- */
@@ -212,11 +214,11 @@ static void connected(struct bt_conn *conn, uint8_t err)
     LOG_INF("Phone Connected!");
     current_conn = bt_conn_ref(conn);
 
-    sec_err = bt_conn_set_security(conn, BT_SECURITY_L3);
+    sec_err = bt_conn_set_security(conn, BT_SECURITY_L2);
     if (sec_err) {
         LOG_ERR("Failed to set security (err %d)", sec_err);
     } else {
-        LOG_INF("Security request sent (L3/MITM)");
+        LOG_INF("Security request sent (L2/Encrypted)");
     }
 }
 
@@ -239,10 +241,22 @@ static void security_changed(struct bt_conn *conn, bt_security_t level,
                              enum bt_security_err err)
 {
     char addr[BT_ADDR_LE_STR_LEN];
+    const bt_addr_le_t *peer = bt_conn_get_dst(conn);
     bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
     if (err) {
         LOG_ERR("Security failed with %s: level %u err %d", addr, level, err);
+
+        /* Recover from stale/missing keys without requiring manual phone cleanup each time. */
+        if (err == BT_SECURITY_ERR_PIN_OR_KEY_MISSING ||
+            err == BT_SECURITY_ERR_AUTH_FAIL) {
+            int unpair_err = bt_unpair(BT_ID_DEFAULT, peer);
+            if (unpair_err) {
+                LOG_WRN("Failed to delete stale bond (err %d)", unpair_err);
+            } else {
+                LOG_INF("Deleted stale bond for %s; next connection will re-pair", addr);
+            }
+        }
     } else {
         LOG_INF("Security changed with %s: level %u", addr, level);
     }
